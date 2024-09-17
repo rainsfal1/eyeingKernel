@@ -319,12 +319,14 @@ asmlinkage long interceptor(struct pt_regs reg) {
 
     // If the syscall is being monitored for this process, log the message
     if (monitored) {
-        log_message(current_pid, syscall,
-                    (unsigned long)(unsigned int)reg.bx, (unsigned long)(unsigned int)reg.cx,
-                    (unsigned long)(unsigned int)reg.dx, (unsigned long)(unsigned int)reg.si,
-                    (unsigned long)(unsigned int)reg.di, (unsigned long)(unsigned int)reg.bp);
+        log_message((unsigned int)current_pid, syscall,
+                    (unsigned long)reg.bx,
+                    (unsigned long)reg.cx,
+                    (unsigned long)reg.dx,
+                    (unsigned long)reg.si,
+                    (unsigned long)reg.di,
+                    (unsigned long)reg.bp);
     }
-
 
 
     // Call the original system call
