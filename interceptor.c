@@ -381,6 +381,7 @@ asmlinkage long interceptor(struct pt_regs reg) {
  */
 asmlinkage long my_syscall(int cmd, int syscall, int pid) {
     int r = 0;
+    kuid_t uid = current_uid();
 
     printk(KERN_DEBUG "my_syscall: Entered with cmd=%d, syscall=%d, pid=%d\n", cmd, syscall, pid);
 
@@ -392,18 +393,18 @@ asmlinkage long my_syscall(int cmd, int syscall, int pid) {
 
     // Check permissions
     if (cmd == REQUEST_SYSCALL_INTERCEPT || cmd == REQUEST_SYSCALL_RELEASE) {
-        if (current_uid() != 0) {
-            printk(KERN_ERR "my_syscall: Permission denied for cmd %d, uid=%d\n", cmd, current_uid());
+        if (!uid_eq(uid, GLOBAL_ROOT_UID)) {
+            printk(KERN_ERR "my_syscall: Permission denied for cmd %d, uid=%d\n", cmd, uid.val);
             return -EPERM;
         }
     } else if (cmd == REQUEST_START_MONITORING || cmd == REQUEST_STOP_MONITORING) {
-        if (pid < 0 || (pid != 0 && pid_task(find_vpid(pid), PIDTYPE_PID) == NULL)) {
+        if (pid < -1) {
             printk(KERN_ERR "my_syscall: Invalid PID %d\n", pid);
             return -EINVAL;
         }
-        if (current_uid() != 0) {
-            if (pid == 0 || !check_pids_same_owner(current->pid, pid)) {
-                printk(KERN_ERR "my_syscall: Permission denied for cmd %d, uid=%d, pid=%d\n", cmd, current_uid(), pid);
+        if (!uid_eq(uid, GLOBAL_ROOT_UID)) {
+            if (pid == 0 || (pid != -1 && !check_pids_same_owner(current->pid, pid))) {
+                printk(KERN_ERR "my_syscall: Permission denied for cmd %d, uid=%d, pid=%d\n", cmd, uid.val, pid);
                 return -EPERM;
             }
         }
@@ -423,13 +424,11 @@ asmlinkage long my_syscall(int cmd, int syscall, int pid) {
                 r = -EBUSY;
             } else {
                 spin_lock(&sys_call_table_lock);
-                printk(KERN_DEBUG "my_syscall: Acquired sys_call_table_lock\n");
                 set_addr_rw((unsigned long)sys_call_table);
                 table[syscall].f = sys_call_table[syscall];
                 sys_call_table[syscall] = interceptor;
                 set_addr_ro((unsigned long)sys_call_table);
                 spin_unlock(&sys_call_table_lock);
-                printk(KERN_DEBUG "my_syscall: Released sys_call_table_lock\n");
                 table[syscall].intercepted = 1;
                 printk(KERN_INFO "my_syscall: Intercepted syscall %d\n", syscall);
             }
@@ -442,12 +441,10 @@ asmlinkage long my_syscall(int cmd, int syscall, int pid) {
                 r = -EINVAL;
             } else {
                 spin_lock(&sys_call_table_lock);
-                printk(KERN_DEBUG "my_syscall: Acquired sys_call_table_lock\n");
                 set_addr_rw((unsigned long)sys_call_table);
                 sys_call_table[syscall] = table[syscall].f;
                 set_addr_ro((unsigned long)sys_call_table);
                 spin_unlock(&sys_call_table_lock);
-                printk(KERN_DEBUG "my_syscall: Released sys_call_table_lock\n");
                 table[syscall].intercepted = 0;
                 table[syscall].monitored = 0;
                 destroy_list(syscall);
@@ -460,11 +457,11 @@ asmlinkage long my_syscall(int cmd, int syscall, int pid) {
             if (!table[syscall].intercepted) {
                 printk(KERN_ERR "my_syscall: Syscall %d not intercepted\n", syscall);
                 r = -EINVAL;
-            } else if (table[syscall].monitored == 2 || (pid != 0 && check_pid_monitored(syscall, pid))) {
+            } else if (table[syscall].monitored == 2 || (pid > 0 && check_pid_monitored(syscall, pid))) {
                 printk(KERN_ERR "my_syscall: PID %d already monitored for syscall %d\n", pid, syscall);
                 r = -EBUSY;
             } else {
-                if (pid == 0) {
+                if (pid == 0 || pid == -1) {
                     destroy_list(syscall);
                     table[syscall].monitored = 2;
                     printk(KERN_INFO "my_syscall: Started monitoring all PIDs for syscall %d\n", syscall);
@@ -488,7 +485,7 @@ asmlinkage long my_syscall(int cmd, int syscall, int pid) {
             } else if (table[syscall].monitored == 0) {
                 printk(KERN_ERR "my_syscall: Syscall %d not monitored\n", syscall);
                 r = -EINVAL;
-            } else if (pid == 0) {
+            } else if (pid == 0 || pid == -1 || table[syscall].monitored == 2) {
                 destroy_list(syscall);
                 table[syscall].monitored = 0;
                 printk(KERN_INFO "my_syscall: Stopped monitoring all PIDs for syscall %d\n", syscall);
