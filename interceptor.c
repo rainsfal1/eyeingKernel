@@ -381,7 +381,6 @@ asmlinkage long interceptor(struct pt_regs reg) {
  */
 asmlinkage long my_syscall(int cmd, int syscall, int pid) {
     int r = 0;
-    kuid_t uid = current_uid();
 
     printk(KERN_DEBUG "my_syscall: Entered with cmd=%d, syscall=%d, pid=%d\n", cmd, syscall, pid);
 
@@ -393,8 +392,8 @@ asmlinkage long my_syscall(int cmd, int syscall, int pid) {
 
     // Check permissions
     if (cmd == REQUEST_SYSCALL_INTERCEPT || cmd == REQUEST_SYSCALL_RELEASE) {
-        if (!uid_eq(uid, GLOBAL_ROOT_UID)) {
-            printk(KERN_ERR "my_syscall: Permission denied for cmd %d, uid=%d\n", cmd, uid.val);
+        if (!capable(CAP_SYS_ADMIN)) {
+            printk(KERN_ERR "my_syscall: Permission denied for cmd %d\n", cmd);
             return -EPERM;
         }
     } else if (cmd == REQUEST_START_MONITORING || cmd == REQUEST_STOP_MONITORING) {
@@ -402,9 +401,9 @@ asmlinkage long my_syscall(int cmd, int syscall, int pid) {
             printk(KERN_ERR "my_syscall: Invalid PID %d\n", pid);
             return -EINVAL;
         }
-        if (!uid_eq(uid, GLOBAL_ROOT_UID)) {
+        if (!capable(CAP_SYS_ADMIN)) {
             if (pid == 0 || (pid != -1 && !check_pids_same_owner(current->pid, pid))) {
-                printk(KERN_ERR "my_syscall: Permission denied for cmd %d, uid=%d, pid=%d\n", cmd, uid.val, pid);
+                printk(KERN_ERR "my_syscall: Permission denied for cmd %d, pid=%d\n", cmd, pid);
                 return -EPERM;
             }
         }
