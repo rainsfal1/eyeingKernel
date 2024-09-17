@@ -266,22 +266,19 @@ asmlinkage long my_exit_group(struct pt_regs reg)
     pid_t pid = current->pid;
     int i;
 
-    // Acquire the lock to ensure thread-safe access to the table
     spin_lock(&my_table_lock);
 
-    // Iterate through all system calls
     for (i = 0; i < NR_syscalls; i++) {
-        // If this syscall is being monitored
         if (table[i].monitored) {
-            // Try to remove the exiting pid from this syscall's list
             del_pid_sysc(pid, i);
         }
     }
 
-    // Release the lock
+    // Use del_pid here if it's needed
+    del_pid(pid);
+
     spin_unlock(&my_table_lock);
 
-    // Call the original exit_group system call
     return orig_exit_group(reg);
 }
 //----------------------------------------------------------------
@@ -322,7 +319,10 @@ asmlinkage long interceptor(struct pt_regs reg) {
 
     // If the syscall is being monitored for this process, log the message
     if (monitored) {
-        log_message(current_pid, syscall, (long)reg.bx, (long)reg.cx, (long)reg.dx, (long)reg.si, (long)reg.di, (long)reg.bp);
+        log_message(current_pid, syscall,
+                    (unsigned long)reg.bx, (unsigned long)reg.cx,
+                    (unsigned long)reg.dx, (unsigned long)reg.si,
+                    (unsigned long)reg.di, (unsigned long)reg.bp);
     }
 
 
