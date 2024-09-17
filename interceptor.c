@@ -322,8 +322,9 @@ asmlinkage long interceptor(struct pt_regs reg) {
 
     // If the syscall is being monitored for this process, log the message
     if (monitored) {
-        log_message(current_pid, syscall, reg.bx, reg.cx, reg.dx, reg.si, reg.di, reg.bp);
+        log_message(current_pid, syscall, (long)reg.bx, (long)reg.cx, (long)reg.dx, (long)reg.si, (long)reg.di, (long)reg.bp);
     }
+
 
     // Call the original system call
     return table[syscall].f(reg);
@@ -383,7 +384,6 @@ asmlinkage long interceptor(struct pt_regs reg) {
  */
 asmlinkage long my_syscall(int cmd, int syscall, int pid) {
     int r = 0;
-    struct task_struct *task;
 
     // Check if syscall is valid
     if (syscall < 0 || syscall >= NR_syscalls || syscall == MY_CUSTOM_SYSCALL) {
@@ -522,7 +522,7 @@ static int init_function(void) {
     // Hijack MY_CUSTOM_SYSCALL
     spin_lock(&sys_call_table_lock);
     orig_custom_syscall = sys_call_table[MY_CUSTOM_SYSCALL];
-    sys_call_table[MY_CUSTOM_SYSCALL] = my_custom_syscall;
+    sys_call_table[MY_CUSTOM_SYSCALL] = my_syscall;
     spin_unlock(&sys_call_table_lock);
 
     // Hijack exit_group system call
