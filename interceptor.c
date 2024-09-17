@@ -306,18 +306,14 @@ asmlinkage long interceptor(struct pt_regs reg) {
     pid_t current_pid = current->pid;
     int monitored = 0;
 
-    // Check if the syscall is being monitored for the current process
     spin_lock(&my_table_lock);
     if (table[syscall].monitored == 2) {
-        // All PIDs are monitored for this syscall
         monitored = 1;
     } else if (table[syscall].monitored == 1) {
-        // Some PIDs are monitored, check the list
         monitored = check_pid_monitored(syscall, current_pid);
     }
     spin_unlock(&my_table_lock);
 
-    // If the syscall is being monitored for this process, log the message
     if (monitored) {
         log_message((unsigned int)current_pid, syscall,
                     (unsigned long)reg.bx,
@@ -328,8 +324,6 @@ asmlinkage long interceptor(struct pt_regs reg) {
                     (unsigned long)reg.bp);
     }
 
-
-    // Call the original system call
     return table[syscall].f(reg);
 }
 
@@ -388,61 +382,69 @@ asmlinkage long interceptor(struct pt_regs reg) {
 asmlinkage long my_syscall(int cmd, int syscall, int pid) {
     int r = 0;
 
-    // Check if syscall is valid
+    printk(KERN_INFO "Interceptor: Command %d, Syscall %d, PID %d\n", cmd, syscall, pid);
+
     if (syscall < 0 || syscall >= NR_syscalls || syscall == MY_CUSTOM_SYSCALL) {
+        printk(KERN_ERR "Interceptor: Invalid syscall number %d\n", syscall);
         return -EINVAL;
     }
 
-    // Check permissions and pid validity for each command
     switch (cmd) {
         case REQUEST_SYSCALL_INTERCEPT:
         case REQUEST_SYSCALL_RELEASE:
             if (current_uid() != 0) {
+                printk(KERN_ERR "Interceptor: Permission denied for cmd %d\n", cmd);
                 return -EPERM;
             }
             break;
         case REQUEST_START_MONITORING:
         case REQUEST_STOP_MONITORING:
             if (pid < 0) {
+                printk(KERN_ERR "Interceptor: Invalid PID %d\n", pid);
                 return -EINVAL;
             }
             if (pid != 0 && pid_task(find_vpid(pid), PIDTYPE_PID) == NULL) {
+                printk(KERN_ERR "Interceptor: PID %d not found\n", pid);
                 return -EINVAL;
             }
             if (current_uid() != 0) {
                 if (pid == 0) {
+                    printk(KERN_ERR "Interceptor: Non-root user cannot monitor all PIDs\n");
                     return -EPERM;
                 }
                 if (!check_pids_same_owner(current->pid, pid)) {
+                    printk(KERN_ERR "Interceptor: PID %d is not owned by the current user\n", pid);
                     return -EPERM;
                 }
             }
             break;
         default:
+            printk(KERN_ERR "Interceptor: Invalid command %d\n", cmd);
             return -EINVAL;
     }
 
-    // Acquire locks
     spin_lock(&my_table_lock);
     spin_lock(&sys_call_table_lock);
 
-    // Handle each command
     switch (cmd) {
         case REQUEST_SYSCALL_INTERCEPT:
             if (table[syscall].intercepted) {
                 r = -EBUSY;
+                printk(KERN_ERR "Interceptor: Syscall %d already intercepted\n", syscall);
             } else {
                 set_addr_rw((unsigned long)sys_call_table);
                 table[syscall].f = sys_call_table[syscall];
                 sys_call_table[syscall] = interceptor;
                 table[syscall].intercepted = 1;
                 set_addr_ro((unsigned long)sys_call_table);
+                printk(KERN_INFO "Interceptor: Intercepted syscall %d\n", syscall);
             }
             break;
 
         case REQUEST_SYSCALL_RELEASE:
             if (!table[syscall].intercepted) {
                 r = -EINVAL;
+                printk(KERN_ERR "Interceptor: Syscall %d not intercepted\n", syscall);
             } else {
                 set_addr_rw((unsigned long)sys_call_table);
                 sys_call_table[syscall] = table[syscall].f;
@@ -450,14 +452,17 @@ asmlinkage long my_syscall(int cmd, int syscall, int pid) {
                 table[syscall].monitored = 0;
                 destroy_list(syscall);
                 set_addr_ro((unsigned long)sys_call_table);
+                printk(KERN_INFO "Interceptor: Released syscall %d\n", syscall);
             }
             break;
 
         case REQUEST_START_MONITORING:
             if (!table[syscall].intercepted) {
                 r = -EINVAL;
+                printk(KERN_ERR "Interceptor: Syscall %d not intercepted\n", syscall);
             } else if (table[syscall].monitored == 2 || (pid != 0 && check_pid_monitored(syscall, pid))) {
                 r = -EBUSY;
+                printk(KERN_ERR "Interceptor: PID %d already monitored\n", pid);
             } else {
                 if (pid == 0) {
                     destroy_list(syscall);
@@ -466,6 +471,7 @@ asmlinkage long my_syscall(int cmd, int syscall, int pid) {
                     r = add_pid_sysc(pid, syscall);
                     if (r == 0) {
                         table[syscall].monitored = 1;
+                        printk(KERN_INFO "Interceptor: Started monitoring PID %d for syscall %d\n", pid, syscall);
                     }
                 }
             }
@@ -474,26 +480,30 @@ asmlinkage long my_syscall(int cmd, int syscall, int pid) {
         case REQUEST_STOP_MONITORING:
             if (!table[syscall].intercepted) {
                 r = -EINVAL;
+                printk(KERN_ERR "Interceptor: Syscall %d not intercepted\n", syscall);
             } else if (table[syscall].monitored == 0) {
                 r = -EINVAL;
+                printk(KERN_ERR "Interceptor: Syscall %d not monitored\n", syscall);
             } else if (pid == 0) {
                 destroy_list(syscall);
                 table[syscall].monitored = 0;
+                printk(KERN_INFO "Interceptor: Stopped monitoring all PIDs for syscall %d\n", syscall);
             } else {
                 r = del_pid_sysc(pid, syscall);
                 if (r == 0 && table[syscall].listcount == 0) {
                     table[syscall].monitored = 0;
+                    printk(KERN_INFO "Interceptor: Stopped monitoring PID %d for syscall %d\n", pid, syscall);
                 }
             }
             break;
     }
 
-    // Release locks
     spin_unlock(&sys_call_table_lock);
     spin_unlock(&my_table_lock);
 
     return r;
 }
+
 
 /**
  *
