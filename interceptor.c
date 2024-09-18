@@ -9,6 +9,8 @@
 #include <linux/spinlock.h>
 #include <linux/semaphore.h>
 #include <linux/syscalls.h>
+#include <linux/list.h>
+#include <asm/uaccess.h>
 #include "interceptor.h"
 
 
@@ -326,58 +328,6 @@ asmlinkage long interceptor(struct pt_regs reg) {
     return table[syscall].f(reg);
 }
 
-/**
- * My system call - this function is called whenever a user issues a MY_CUSTOM_SYSCALL system call.
- * When that happens, the parameters for this system call indicate one of 4 actions/commands:
- *      - REQUEST_SYSCALL_INTERCEPT to intercept the 'syscall' argument
- *      - REQUEST_SYSCALL_RELEASE to de-intercept the 'syscall' argument
- *      - REQUEST_START_MONITORING to start monitoring for 'pid' whenever it issues 'syscall'
- *      - REQUEST_STOP_MONITORING to stop monitoring for 'pid'
- *      For the last two, if pid=0, that translates to "all pids".
- *
- * TODO: Implement this function, to handle all 4 commands correctly.
- *
- * - For each of the commands, check that the arguments are valid (-EINVAL):
- *   a) the syscall must be valid (not negative, not > NR_syscalls-1, and not MY_CUSTOM_SYSCALL itself)
- *   b) the pid must be valid for the last two commands. It cannot be a negative integer,
- *      and it must be an existing pid (except for the case when it's 0, indicating that we want
- *      to start/stop monitoring for "all pids").
- *      If a pid belongs to a valid process, then the following expression is non-NULL:
- *           pid_task(find_vpid(pid), PIDTYPE_PID)
- * - Check that the caller has the right permissions (-EPERM)
- *      For the first two commands, we must be root (see the current_uid() macro).
- *      For the last two commands, the following logic applies:
- *        - is the calling process root? if so, all is good, no doubts about permissions.
- *        - if not, then check if the 'pid' requested is owned by the calling process
- *        - also, if 'pid' is 0 and the calling process is not root, then access is denied
- *          (monitoring all pids is allowed only for root, obviously).
- *      To determine if two pids have the same owner, use the helper function provided above in this file.
- * - Check for correct context of commands (-EINVAL):
- *     a) Cannot de-intercept a system call that has not been intercepted yet.
- *     b) Cannot stop monitoring for a pid that is not being monitored, or if the
- *        system call has not been intercepted yet.
- * - Check for -EBUSY conditions:
- *     a) If intercepting a system call that is already intercepted.
- *     b) If monitoring a pid that is already being monitored.
- * - If a pid cannot be added to a monitored list, due to no memory being available,
- *   an -ENOMEM error code should be returned.
- *
- *   NOTE: The order of the checks may affect the tester, in case of several error conditions
- *   in the same system call, so please be careful!
- *
- * - Make sure to keep track of all the metadata on what is being intercepted and monitored.
- *   Use the helper functions provided above for dealing with list operations.
- *
- * - Whenever altering the sys_call_table, make sure to use the set_addr_rw/set_addr_ro functions
- *   to make the system call table writable, then set it back to read-only.
- *   For example: set_addr_rw((unsigned long)sys_call_table);
- *   Also, make sure to save the original system call (you will need it for 'interceptor' to work correctly).
- *
- * - Make sure to use synchronization to ensure consistency of shared data structures.
- *   Use the sys_call_table_lock and my_table_lock to ensure mutual exclusion for accesses
- *   to the system call table and the lists of monitored pids. Be careful to unlock any spinlocks
- *   you might be holding, before you exit the function (including error cases!).
- */
 
 asmlinkage long my_syscall(int cmd, int syscall, int pid) {
     int r = 0;
@@ -402,7 +352,7 @@ asmlinkage long my_syscall(int cmd, int syscall, int pid) {
             return -EINVAL;
         }
         if (!capable(CAP_SYS_ADMIN)) {
-            if (pid == 0 || (pid != -1 && !check_pids_same_owner(current->pid, pid))) {
+            if (pid == 0 || (pid != -1 && !check_pids_same_owner(current, pid))) {
                 printk(KERN_ERR "my_syscall: Permission denied for cmd %d, pid=%d\n", cmd, pid);
                 return -EPERM;
             }
@@ -458,6 +408,7 @@ asmlinkage long my_syscall(int cmd, int syscall, int pid) {
                 r = -EINVAL;
             } else if (pid == 0) {
                 if (table[syscall].monitored == 2) {
+                    printk(KERN_ERR "my_syscall: Already monitoring all PIDs for syscall %d\n", syscall);
                     r = -EBUSY;
                 } else {
                     destroy_list(syscall);
@@ -469,12 +420,15 @@ asmlinkage long my_syscall(int cmd, int syscall, int pid) {
                     pid = current->pid;
                 }
                 if (check_pid_monitored(syscall, pid)) {
+                    printk(KERN_ERR "my_syscall: PID %d already monitored for syscall %d\n", pid, syscall);
                     r = -EBUSY;
                 } else {
                     r = add_pid_sysc(pid, syscall);
                     if (r == 0) {
                         table[syscall].monitored = 1;
                         printk(KERN_INFO "my_syscall: Started monitoring PID %d for syscall %d\n", pid, syscall);
+                    } else {
+                        printk(KERN_ERR "my_syscall: Failed to add PID %d to monitored list for syscall %d\n", pid, syscall);
                     }
                 }
             }
@@ -496,6 +450,7 @@ asmlinkage long my_syscall(int cmd, int syscall, int pid) {
                     pid = current->pid;
                 }
                 if (table[syscall].monitored == 2) {
+                    printk(KERN_ERR "my_syscall: Monitoring all PIDs, can't stop individual PID %d for syscall %d\n", pid, syscall);
                     r = -EINVAL;
                 } else {
                     r = del_pid_sysc(pid, syscall);
@@ -504,6 +459,8 @@ asmlinkage long my_syscall(int cmd, int syscall, int pid) {
                             table[syscall].monitored = 0;
                         }
                         printk(KERN_INFO "my_syscall: Stopped monitoring PID %d for syscall %d\n", pid, syscall);
+                    } else {
+                        printk(KERN_ERR "my_syscall: Failed to remove PID %d from monitored list for syscall %d\n", pid, syscall);
                     }
                 }
             }
@@ -516,27 +473,11 @@ asmlinkage long my_syscall(int cmd, int syscall, int pid) {
     return r;
 }
 
-/**
- *
- */
+
 long (*orig_custom_syscall)(void);
 
 
-/**
- * Module initialization.
- *
- * TODO: Make sure to:
- * - Hijack MY_CUSTOM_SYSCALL and save the original in orig_custom_syscall.
- * - Hijack the exit_group system call (__NR_exit_group) and save the original
- *   in orig_exit_group.
- * - Make sure to set the system call table to writable when making changes,
- *   then set it back to read only once done.
- * - Perform any necessary initializations for bookkeeping data structures.
- *   To initialize a list, use
- *        INIT_LIST_HEAD (&some_list);
- *   where some_list is a "struct list_head".
- * - Ensure synchronization as needed.
- */
+
 static int init_function(void) {
     int i;
 
@@ -572,17 +513,6 @@ static int init_function(void) {
     return 0;
 }
 
-/**
- * Module exits.
- *
- * TODO: Make sure to:
- * - Restore MY_CUSTOM_SYSCALL to the original syscall.
- * - Restore __NR_exit_group to its original syscall.
- * - Make sure to set the system call table to writable when making changes,
- *   then set it back to read only once done.
- * - Make sure to deintercept all syscalls, and cleanup all pid lists.
- * - Ensure synchronization, if needed.
- */
 
 static void exit_function(void) {
     int i;
