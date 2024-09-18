@@ -503,36 +503,33 @@ long (*orig_custom_syscall)(void);
  * - Ensure synchronization as needed.
  */
 static int init_function(void) {
-    int i;
+    int syscall;
 
-    // Make the system call table writable
+    // Initialize table
+    for (syscall = 0; syscall < NR_syscalls; syscall++) {
+        table[syscall].f = sys_call_table[syscall];
+        table[syscall].intercepted = 0;
+        table[syscall].monitored = 0;
+        table[syscall].listcount = 0;
+        INIT_LIST_HEAD(&table[syscall].my_list);
+    }
+
+    spin_lock(&sys_call_table_lock);
+
+    // Set system call table writable
     set_addr_rw((unsigned long)sys_call_table);
 
-    // Hijack MY_CUSTOM_SYSCALL
-    spin_lock(&sys_call_table_lock);
+    // Store and replace original syscalls
     orig_custom_syscall = sys_call_table[MY_CUSTOM_SYSCALL];
     sys_call_table[MY_CUSTOM_SYSCALL] = my_syscall;
-    spin_unlock(&sys_call_table_lock);
 
-    // Hijack exit_group system call
-    spin_lock(&sys_call_table_lock);
     orig_exit_group = sys_call_table[__NR_exit_group];
     sys_call_table[__NR_exit_group] = my_exit_group;
-    spin_unlock(&sys_call_table_lock);
 
-    // Make the system call table read-only again
+    // Set system call table read-only
     set_addr_ro((unsigned long)sys_call_table);
 
-    // Initialize bookkeeping data structures
-    spin_lock(&my_table_lock);
-    for (i = 0; i < NR_syscalls; i++) {
-        table[i].f = NULL;
-        table[i].intercepted = 0;
-        table[i].monitored = 0;
-        table[i].listcount = 0;
-        INIT_LIST_HEAD(&table[i].my_list);
-    }
-    spin_unlock(&my_table_lock);
+    spin_unlock(&sys_call_table_lock);
 
     return 0;
 }
@@ -550,38 +547,29 @@ static int init_function(void) {
  */
 
 static void exit_function(void) {
-    int i;
+    spin_lock(&sys_call_table_lock);
 
-    // Make the system call table writable
+    // Set system call table writable
     set_addr_rw((unsigned long)sys_call_table);
 
-    // Restore MY_CUSTOM_SYSCALL
-    spin_lock(&sys_call_table_lock);
+    // Restore original syscalls
     sys_call_table[MY_CUSTOM_SYSCALL] = orig_custom_syscall;
-    spin_unlock(&sys_call_table_lock);
-
-    // Restore __NR_exit_group
-    spin_lock(&sys_call_table_lock);
     sys_call_table[__NR_exit_group] = orig_exit_group;
-    spin_unlock(&sys_call_table_lock);
 
-    // Make the system call table read-only again
+    // Set system call table read-only
     set_addr_ro((unsigned long)sys_call_table);
 
-    // Clean up all intercepted syscalls and pid lists
+    spin_unlock(&sys_call_table_lock);
+
+    // Clean up all pid lists
+    int i;
     spin_lock(&my_table_lock);
     for (i = 0; i < NR_syscalls; i++) {
-        if (table[i].intercepted) {
-            // Restore original syscall if it was intercepted
-            spin_lock(&sys_call_table_lock);
-            sys_call_table[i] = table[i].f;
-            spin_unlock(&sys_call_table_lock);
-        }
-        // Clean up the pid list for this syscall
         destroy_list(i);
     }
     spin_unlock(&my_table_lock);
 }
+
 
 module_init(init_function);
 module_exit(exit_function);
