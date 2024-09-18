@@ -382,9 +382,9 @@ asmlinkage long my_syscall(int cmd, int syscall, int pid) {
 
     printk(KERN_DEBUG "my_syscall: Entered with cmd=%d, syscall=%d, pid=%d\n", cmd, syscall, pid);
 
-    // Validate syscall number
-    if (syscall < 0 || syscall >= NR_syscalls || syscall == MY_CUSTOM_SYSCALL) {
-        printk(KERN_ERR "my_syscall: Invalid syscall number %d\n", syscall);
+    // Validate syscall number and pid
+    if (syscall < 0 || syscall >= NR_syscalls || syscall == MY_CUSTOM_SYSCALL || pid < -1) {
+        printk(KERN_ERR "my_syscall: Invalid syscall number %d or pid %d\n", syscall, pid);
         return -EINVAL;
     }
 
@@ -395,10 +395,6 @@ asmlinkage long my_syscall(int cmd, int syscall, int pid) {
             return -EPERM;
         }
     } else if (cmd == REQUEST_START_MONITORING || cmd == REQUEST_STOP_MONITORING) {
-        if (pid < -1) {
-            printk(KERN_ERR "my_syscall: Invalid PID %d\n", pid);
-            return -EINVAL;
-        }
         if (!capable(CAP_SYS_ADMIN)) {
             if (pid == 0 || (pid != -1 && !check_pids_same_owner(current->pid, pid))) {
                 printk(KERN_ERR "my_syscall: Permission denied for cmd %d, pid=%d\n", cmd, pid);
@@ -462,21 +458,8 @@ asmlinkage long my_syscall(int cmd, int syscall, int pid) {
                     destroy_list(syscall);
                     table[syscall].monitored = 2;
                     printk(KERN_INFO "my_syscall: Started monitoring all PIDs for syscall %d\n", syscall);
-                } else if (pid == -1) {
-                    pid = current->pid;
-                    if (!check_pid_monitored(syscall, pid)) {
-                        r = add_pid_sysc(pid, syscall);
-                        if (r == 0) {
-                            table[syscall].monitored = 1;
-                            printk(KERN_INFO "my_syscall: Started monitoring PID %d for syscall %d\n", pid, syscall);
-                        } else {
-                            printk(KERN_ERR "my_syscall: Failed to add PID %d to monitored list for syscall %d\n", pid, syscall);
-                        }
-                    } else {
-                        r = -EBUSY;
-                        printk(KERN_ERR "my_syscall: PID %d already monitored for syscall %d\n", pid, syscall);
-                    }
                 } else {
+                    if (pid == -1) pid = current->pid;
                     r = add_pid_sysc(pid, syscall);
                     if (r == 0) {
                         table[syscall].monitored = 1;
@@ -501,9 +484,7 @@ asmlinkage long my_syscall(int cmd, int syscall, int pid) {
                 table[syscall].monitored = 0;
                 printk(KERN_INFO "my_syscall: Stopped monitoring all PIDs for syscall %d\n", syscall);
             } else {
-                if (pid == -1) {
-                    pid = current->pid;
-                }
+                if (pid == -1) pid = current->pid;
                 r = del_pid_sysc(pid, syscall);
                 if (r == 0) {
                     if (table[syscall].listcount == 0) {
