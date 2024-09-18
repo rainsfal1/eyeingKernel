@@ -25,7 +25,7 @@ The module modifies the system call table to replace selected system calls with 
 ## Prerequisites
 - **Linux Kernel Development Setup**: Ensure you have the kernel headers and build tools installed.
 - **Root Privileges**: Root access is required to load/unload kernel modules.
-- **Kernel Version Compatibility**: The module is designed for modern Linux kernels (adjust as necessary for your kernel version).
+- **Kernel Version Compatibility**: The module is designed for older Linux kernels (adjust as necessary for your kernel version).
 ---
 
 ## Installation
