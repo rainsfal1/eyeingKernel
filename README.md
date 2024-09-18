@@ -134,6 +134,4 @@ To intercept a system call and start monitoring all PIDs:
 ## License
 This project is licensed under the GNU General Public License (GPL).
 
----
 
-Feel free to adjust and add any project-specific details that might be necessary.
