@@ -378,124 +378,119 @@ asmlinkage long interceptor(struct pt_regs reg) {
  *   to the system call table and the lists of monitored pids. Be careful to unlock any spinlocks 
  *   you might be holding, before you exit the function (including error cases!).  
  */
-// ... (previous code remains the same)
 
 asmlinkage long my_syscall(int cmd, int syscall, int pid) {
-    int r = 0;
-
-    printk(KERN_DEBUG "my_syscall: Entered with cmd=%d, syscall=%d, pid=%d\n", cmd, syscall, pid);
-
-    // Validate syscall number
     if (syscall < 0 || syscall >= NR_syscalls || syscall == MY_CUSTOM_SYSCALL) {
-        printk(KERN_ERR "my_syscall: Invalid syscall number %d\n", syscall);
         return -EINVAL;
     }
 
-    // Check permissions
     if (cmd == REQUEST_SYSCALL_INTERCEPT || cmd == REQUEST_SYSCALL_RELEASE) {
-        if (!capable(CAP_SYS_ADMIN)) {
-            printk(KERN_ERR "my_syscall: Permission denied for cmd %d\n", cmd);
+        if (current_uid() != 0) {
             return -EPERM;
         }
     } else if (cmd == REQUEST_START_MONITORING || cmd == REQUEST_STOP_MONITORING) {
         if (pid < -1) {
-            printk(KERN_ERR "my_syscall: Invalid PID %d\n", pid);
             return -EINVAL;
         }
-        if (!capable(CAP_SYS_ADMIN)) {
+        if (current_uid() != 0) {
             if (pid == 0 || (pid != -1 && !check_pids_same_owner(current->pid, pid))) {
-                printk(KERN_ERR "my_syscall: Permission denied for cmd %d, pid=%d\n", cmd, pid);
                 return -EPERM;
             }
         }
     } else {
-        printk(KERN_ERR "my_syscall: Invalid command %d\n", cmd);
         return -EINVAL;
     }
 
     spin_lock(&my_table_lock);
-    printk(KERN_DEBUG "my_syscall: Acquired my_table_lock\n");
 
     switch (cmd) {
         case REQUEST_SYSCALL_INTERCEPT:
-            // ... (intercept code remains the same)
+            if (table[syscall].intercepted) {
+                spin_unlock(&my_table_lock);
+                return -EBUSY;
+            }
+            table[syscall].intercepted = 1;
+            table[syscall].f = sys_call_table[syscall];
+            spin_lock(&calltable_lock);
+            set_addr_rw((unsigned long) sys_call_table);
+            sys_call_table[syscall] = interceptor;
+            set_addr_ro((unsigned long) sys_call_table);
+            spin_unlock(&calltable_lock);
             break;
 
         case REQUEST_SYSCALL_RELEASE:
-            // ... (release code remains the same)
+            if (!table[syscall].intercepted) {
+                spin_unlock(&my_table_lock);
+                return -EINVAL;
+            }
+            spin_lock(&calltable_lock);
+            set_addr_rw((unsigned long) sys_call_table);
+            sys_call_table[syscall] = table[syscall].f;
+            set_addr_ro((unsigned long) sys_call_table);
+            spin_unlock(&calltable_lock);
+            table[syscall].intercepted = 0;
+            table[syscall].monitored = 0;
+            destroy_list(syscall);
             break;
 
         case REQUEST_START_MONITORING:
-            printk(KERN_DEBUG "my_syscall: Processing REQUEST_START_MONITORING\n");
             if (!table[syscall].intercepted) {
-                printk(KERN_ERR "my_syscall: Syscall %d not intercepted\n", syscall);
-                r = -EINVAL;
-            } else if (table[syscall].monitored == 2 || (pid > 0 && check_pid_monitored(syscall, pid))) {
-                printk(KERN_ERR "my_syscall: PID %d already monitored for syscall %d\n", pid, syscall);
-                r = -EBUSY;
-            } else {
-                if (pid == 0) {
-                    destroy_list(syscall);
-                    table[syscall].monitored = 2;
-                    printk(KERN_INFO "my_syscall: Started monitoring all PIDs for syscall %d\n", syscall);
-                } else {
-                    if (pid == -1) {
-                        pid = current->pid;
-                    }
-                    if (!check_pid_monitored(syscall, pid)) {
-                        r = add_pid_sysc(pid, syscall);
-                        if (r == 0) {
-                            table[syscall].monitored = 1;
-                            printk(KERN_INFO "my_syscall: Started monitoring PID %d for syscall %d\n", pid, syscall);
-                        } else {
-                            printk(KERN_ERR "my_syscall: Failed to add PID %d to monitored list for syscall %d\n", pid, syscall);
-                        }
-                    } else {
-                        r = -EBUSY;
-                        printk(KERN_ERR "my_syscall: PID %d already monitored for syscall %d\n", pid, syscall);
-                    }
-                }
+                spin_unlock(&my_table_lock);
+                return -EINVAL;
             }
-            break;
-
-        case REQUEST_STOP_MONITORING:
-            printk(KERN_DEBUG "my_syscall: Processing REQUEST_STOP_MONITORING\n");
-            if (!table[syscall].intercepted) {
-                printk(KERN_ERR "my_syscall: Syscall %d not intercepted\n", syscall);
-                r = -EINVAL;
-            } else if (table[syscall].monitored == 0) {
-                printk(KERN_ERR "my_syscall: Syscall %d not monitored\n", syscall);
-                r = -EINVAL;
-            } else if (pid == 0) {
+            if (table[syscall].monitored == 2 || (pid > 0 && check_pid_monitored(syscall, pid))) {
+                spin_unlock(&my_table_lock);
+                return -EBUSY;
+            }
+            if (pid == 0) {
                 destroy_list(syscall);
-                table[syscall].monitored = 0;
-                printk(KERN_INFO "my_syscall: Stopped monitoring all PIDs for syscall %d\n", syscall);
+                table[syscall].monitored = 2;
             } else {
                 if (pid == -1) {
                     pid = current->pid;
                 }
-                if (check_pid_monitored(syscall, pid)) {
-                    r = del_pid_sysc(pid, syscall);
-                    if (r == 0) {
-                        if (table[syscall].listcount == 0) {
-                            table[syscall].monitored = 0;
-                        }
-                        printk(KERN_INFO "my_syscall: Stopped monitoring PID %d for syscall %d\n", pid, syscall);
-                    } else {
-                        printk(KERN_ERR "my_syscall: Failed to remove PID %d from monitored list for syscall %d\n", pid, syscall);
-                    }
+                if (add_pid_sysc(pid, syscall) != 0) {
+                    spin_unlock(&my_table_lock);
+                    return -ENOMEM;
+                }
+                table[syscall].monitored = 1;
+            }
+            break;
+
+        case REQUEST_STOP_MONITORING:
+            if (!table[syscall].intercepted) {
+                spin_unlock(&my_table_lock);
+                return -EINVAL;
+            }
+            if (table[syscall].monitored == 0) {
+                spin_unlock(&my_table_lock);
+                return -EINVAL;
+            }
+            if (pid == 0) {
+                destroy_list(syscall);
+                table[syscall].monitored = 0;
+            } else {
+                if (pid == -1) {
+                    pid = current->pid;
+                }
+                if (table[syscall].monitored == 2) {
+                    add_pid_sysc(pid, syscall);
+                    table[syscall].monitored = 1;
                 } else {
-                    r = -EINVAL;
-                    printk(KERN_ERR "my_syscall: PID %d not monitored for syscall %d\n", pid, syscall);
+                    if (del_pid_sysc(pid, syscall) != 0) {
+                        spin_unlock(&my_table_lock);
+                        return -EINVAL;
+                    }
+                    if (table[syscall].listcount == 0) {
+                        table[syscall].monitored = 0;
+                    }
                 }
             }
             break;
     }
 
     spin_unlock(&my_table_lock);
-    printk(KERN_DEBUG "my_syscall: Released my_table_lock\n");
-    printk(KERN_DEBUG "my_syscall: Exiting with return value %d\n", r);
-    return r;
+    return 0;
 }
 
 /**
