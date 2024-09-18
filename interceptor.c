@@ -383,8 +383,8 @@ asmlinkage long my_syscall(int cmd, int syscall, int pid) {
     printk(KERN_DEBUG "my_syscall: Entered with cmd=%d, syscall=%d, pid=%d\n", cmd, syscall, pid);
 
     // Validate syscall number and pid
-    if (syscall < 0 || syscall >= NR_syscalls || syscall == MY_CUSTOM_SYSCALL || pid < -1) {
-        printk(KERN_ERR "my_syscall: Invalid syscall number %d or pid %d\n", syscall, pid);
+    if (syscall < 0 || syscall >= NR_syscalls || syscall == MY_CUSTOM_SYSCALL) {
+        printk(KERN_ERR "my_syscall: Invalid syscall number %d\n", syscall);
         return -EINVAL;
     }
 
@@ -395,6 +395,10 @@ asmlinkage long my_syscall(int cmd, int syscall, int pid) {
             return -EPERM;
         }
     } else if (cmd == REQUEST_START_MONITORING || cmd == REQUEST_STOP_MONITORING) {
+        if (pid < -1) {
+            printk(KERN_ERR "my_syscall: Invalid PID %d\n", pid);
+            return -EINVAL;
+        }
         if (!capable(CAP_SYS_ADMIN)) {
             if (pid == 0 || (pid != -1 && !check_pids_same_owner(current->pid, pid))) {
                 printk(KERN_ERR "my_syscall: Permission denied for cmd %d, pid=%d\n", cmd, pid);
@@ -423,6 +427,8 @@ asmlinkage long my_syscall(int cmd, int syscall, int pid) {
                 set_addr_ro((unsigned long)sys_call_table);
                 spin_unlock(&sys_call_table_lock);
                 table[syscall].intercepted = 1;
+                table[syscall].monitored = 0;
+                table[syscall].listcount = 0;
                 printk(KERN_INFO "my_syscall: Intercepted syscall %d\n", syscall);
             }
             break;
