@@ -9,8 +9,6 @@
 #include <linux/spinlock.h>
 #include <linux/semaphore.h>
 #include <linux/syscalls.h>
-#include <linux/list.h>
-#include <asm/uaccess.h>
 #include "interceptor.h"
 
 
@@ -380,6 +378,7 @@ asmlinkage long my_syscall(int cmd, int syscall, int pid) {
                 table[syscall].intercepted = 1;
                 table[syscall].monitored = 0;
                 table[syscall].listcount = 0;
+                // Assuming INIT_LIST_HEAD is defined elsewhere
                 INIT_LIST_HEAD(&table[syscall].my_list);
                 printk(KERN_INFO "my_syscall: Intercepted syscall %d\n", syscall);
             }
